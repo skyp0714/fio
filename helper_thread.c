@@ -106,13 +106,14 @@ static int read_from_pipe(int fd, void *buf, size_t len)
 
 static void block_signals(void)
 {
-#ifdef HAVE_PTHREAD_SIGMASK
+#ifdef CONFIG_PTHREAD_SIGMASK
 	sigset_t sigmask;
+
+	int ret;
 
 	ret = pthread_sigmask(SIG_UNBLOCK, NULL, &sigmask);
 	assert(ret == 0);
 	ret = pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
-	assert(ret == 0);
 #endif
 }
 
@@ -160,7 +161,6 @@ void helper_thread_exit(void)
 		return;
 
 	helper_data->exit = 1;
-	submit_action(A_EXIT);
 	pthread_join(helper_data->thread, NULL);
 }
 
@@ -418,6 +418,8 @@ int helper_thread_create(struct fio_sem *startup_sem, struct sk_out *sk_out)
 	int ret;
 
 	hd = scalloc(1, sizeof(*hd));
+	if (!hd)
+		return 1;
 
 	setup_disk_util();
 	steadystate_setup();

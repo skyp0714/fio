@@ -27,6 +27,17 @@ blkzone_reports_capacity() {
 		"${blkzone}" report -c 1 -o 0 "${dev}" | grep -q 'cap '
 }
 
+has_command() {
+	local cmd="${1}"
+
+	cmd_path=$(type -p "${cmd}" 2>/dev/null)
+	if [ -z "${cmd_path}" ]; then
+		echo "${cmd} is not available"
+		return 1
+	fi
+	return 0
+}
+
 # Whether or not $1 (/dev/...) is a NVME ZNS device.
 is_nvme_zns() {
 	local s
@@ -277,6 +288,28 @@ min_seq_write_size() {
 	else
 		cat "$sys_path/logical_block_size"
 	fi
+}
+
+urswrz() {
+    local dev=$1
+
+    if [ -n "${sg_inq}" ] && [ ! -n "${use_libzbc}" ]; then
+	if ! ${sg_inq} -e --page=0xB6 --len=10 --hex "$dev" \
+		 > /dev/null 2>&1; then
+	    # Couldn't get URSWRZ bit. Assume the reads are unrestricted
+	    # because this configuration is more common.
+	    echo 1
+	else
+	    ${sg_inq} -e --page=0xB6 --len=10 --hex "$dev" | tail -1 |
+		{
+		    read -r offset b0 b1 b2 b3 b4 trailer && \
+			echo $(( $b4 & 0x01 )) || echo 0
+		}
+	fi
+    else
+	${zbc_info} "$dev" |
+	    sed -n 's/^[[:blank:]].*Read commands are \(un\)restricted*/\1/p' | grep -q ^ && echo 1 || echo 0
+    fi
 }
 
 is_zbc() {

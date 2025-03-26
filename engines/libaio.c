@@ -53,6 +53,7 @@ struct libaio_data {
 	struct io_u **io_us;
 
 	struct io_u **io_u_index;
+	struct iovec *iovecs;		/* for vectored requests */
 
 	/*
 	 * Basic ring buffer. 'head' is incremented in _queue(), and
@@ -78,6 +79,7 @@ struct libaio_options {
 	unsigned int userspace_reap;
 	struct cmdprio_options cmdprio_options;
 	unsigned int nowait;
+	unsigned int vectored;
 };
 
 static struct fio_option options[] = {
@@ -99,6 +101,16 @@ static struct fio_option options[] = {
 		.category = FIO_OPT_C_ENGINE,
 		.group	= FIO_OPT_G_LIBAIO,
 	},
+	{
+		.name	= "libaio_vectored",
+		.lname	= "Use libaio preadv,pwritev",
+		.type	= FIO_OPT_BOOL,
+		.off1	= offsetof(struct libaio_options, vectored),
+		.help	= "Use libaio {preadv,pwritev} instead of libaio {pread,pwrite}",
+		.category = FIO_OPT_C_ENGINE,
+		.group	= FIO_OPT_G_LIBAIO,
+	},
+
 	CMDPRIO_OPTIONS(struct libaio_options, FIO_OPT_G_LIBAIO),
 	{
 		.name	= NULL,
@@ -119,15 +131,38 @@ static int fio_libaio_prep(struct thread_data *td, struct io_u *io_u)
 	struct libaio_options *o = td->eo;
 	struct fio_file *f = io_u->file;
 	struct iocb *iocb = &io_u->iocb;
+	struct libaio_data *ld = td->io_ops_data;
 
 	if (io_u->ddir == DDIR_READ) {
-		io_prep_pread(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->offset);
+		if (o->vectored) {
+			struct iovec *iov = &ld->iovecs[io_u->index];
+
+			iov->iov_base = io_u->xfer_buf;
+			iov->iov_len = (size_t)io_u->xfer_buflen;
+			io_prep_preadv(iocb, f->fd, iov, 1, io_u->offset);
+		} else {
+			io_prep_pread(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen,
+						  io_u->offset);
+		}
 		if (o->nowait)
 			iocb->aio_rw_flags |= RWF_NOWAIT;
 	} else if (io_u->ddir == DDIR_WRITE) {
-		io_prep_pwrite(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen, io_u->offset);
+		if (o->vectored) {
+			struct iovec *iov = &ld->iovecs[io_u->index];
+
+			iov->iov_base = io_u->xfer_buf;
+			iov->iov_len = (size_t)io_u->xfer_buflen;
+			io_prep_pwritev(iocb, f->fd, iov, 1, io_u->offset);
+		} else {
+			io_prep_pwrite(iocb, f->fd, io_u->xfer_buf, io_u->xfer_buflen,
+						   io_u->offset);
+		}
 		if (o->nowait)
 			iocb->aio_rw_flags |= RWF_NOWAIT;
+#ifdef FIO_HAVE_RWF_ATOMIC
+		if (td->o.oatomic)
+			iocb->aio_rw_flags |= RWF_ATOMIC;
+#endif
 	} else if (ddir_sync(io_u->ddir))
 		io_prep_fsync(iocb, f->fd);
 
@@ -485,6 +520,7 @@ static void fio_libaio_cleanup(struct thread_data *td)
 			io_destroy(ld->aio_ctx);
 
 		fio_cmdprio_cleanup(&ld->cmdprio);
+		free(ld->iovecs);
 		free(ld->aio_events);
 		free(ld->iocbs);
 		free(ld->io_us);
@@ -519,6 +555,7 @@ static int fio_libaio_init(struct thread_data *td)
 	ld->aio_events = calloc(ld->entries, sizeof(struct io_event));
 	ld->iocbs = calloc(ld->entries, sizeof(struct iocb *));
 	ld->io_us = calloc(ld->entries, sizeof(struct io_u *));
+	ld->iovecs = calloc(ld->entries, sizeof(ld->iovecs[0]));
 
 	td->io_ops_data = ld;
 
@@ -535,7 +572,8 @@ FIO_STATIC struct ioengine_ops ioengine = {
 	.name			= "libaio",
 	.version		= FIO_IOOPS_VERSION,
 	.flags			= FIO_ASYNCIO_SYNC_TRIM |
-					FIO_ASYNCIO_SETS_ISSUE_TIME,
+					FIO_ASYNCIO_SETS_ISSUE_TIME |
+					FIO_ATOMICWRITES,
 	.init			= fio_libaio_init,
 	.post_init		= fio_libaio_post_init,
 	.prep			= fio_libaio_prep,

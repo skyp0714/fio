@@ -71,6 +71,16 @@
 
 struct fio_sem;
 
+#define MAX_TRIM_RANGE	256
+
+/*
+ * Range for trim command
+ */
+struct trim_range {
+	unsigned long long start;
+	unsigned long long len;
+};
+
 /*
  * offset generator types
  */
@@ -248,8 +258,9 @@ struct thread_data {
 	size_t orig_buffer_size;
 	volatile int runstate;
 	volatile bool terminate;
-	bool last_was_sync;
-	enum fio_ddir last_ddir;
+
+	enum fio_ddir last_ddir_completed;
+	enum fio_ddir last_ddir_issued;
 
 	int mmapfd;
 
@@ -376,6 +387,7 @@ struct thread_data {
 	struct fio_sem *sem;
 	uint64_t bytes_done[DDIR_RWDIR_CNT];
 	uint64_t bytes_verified;
+	uint32_t last_write_comp_depth;
 
 	uint64_t *thinktime_blocks_counter;
 	struct timespec last_thinktime;
@@ -609,9 +621,17 @@ static inline void fio_ro_check(const struct thread_data *td, struct io_u *io_u)
 	       !(io_u->ddir == DDIR_TRIM && !td_trim(td)));
 }
 
+static inline bool multi_range_trim(struct thread_data *td, struct io_u *io_u)
+{
+	if (io_u->ddir == DDIR_TRIM && td->o.num_range > 1)
+		return true;
+
+	return false;
+}
+
 static inline bool should_fsync(struct thread_data *td)
 {
-	if (td->last_was_sync)
+	if (ddir_sync(td->last_ddir_issued))
 		return false;
 	if (td_write(td) || td->o.override_sync)
 		return true;
@@ -688,8 +708,8 @@ enum {
 	TD_NR,
 };
 
-#define TD_ENG_FLAG_SHIFT	18
-#define TD_ENG_FLAG_MASK	((1ULL << 18) - 1)
+#define TD_ENG_FLAG_SHIFT	(__TD_F_LAST)
+#define TD_ENG_FLAG_MASK	((1ULL << (__TD_F_LAST)) - 1)
 
 static inline void td_set_ioengine_flags(struct thread_data *td)
 {
@@ -779,6 +799,15 @@ extern void lat_target_reset(struct thread_data *);
 		for ((i) = 0, (f) = (td)->files[0];			\
 	    	 (i) < (td)->o.nr_files && ((f) = (td)->files[i]) != NULL; \
 		 (i)++)
+
+static inline bool fio_offset_overlap_risk(struct thread_data *td)
+{
+	if (td->o.norandommap || td->o.softrandommap ||
+	    td->o.ddir_seq_add || (td->o.ddir_seq_nr > 1))
+		return true;
+
+	return false;
+}
 
 static inline bool fio_fill_issue_time(struct thread_data *td)
 {

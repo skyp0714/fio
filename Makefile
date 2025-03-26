@@ -62,7 +62,7 @@ SOURCE :=	$(sort $(patsubst $(SRCDIR)/%,%,$(wildcard $(SRCDIR)/crc/*.c)) \
 		gettime-thread.c helpers.c json.c idletime.c td_error.c \
 		profiles/tiobench.c profiles/act.c io_u_queue.c filelock.c \
 		workqueue.c rate-submit.c optgroup.c helper_thread.c \
-		steadystate.c zone-dist.c zbd.c dedupe.c fdp.c
+		steadystate.c zone-dist.c zbd.c dedupe.c dataplacement.c
 
 ifdef CONFIG_LIBHDFS
   HDFSFLAGS= -I $(JAVA_HOME)/include -I $(JAVA_HOME)/include/linux -I $(FIO_LIBHDFS_INCLUDE)
@@ -107,29 +107,6 @@ ifdef CONFIG_RDMA
   rdma_SRCS = engines/rdma.c
   rdma_LIBS = -libverbs -lrdmacm
   ENGINES += rdma
-endif
-ifdef CONFIG_LIBRPMA_APM
-  librpma_apm_SRCS = engines/librpma_apm.c
-  librpma_fio_SRCS = engines/librpma_fio.c
-  ifdef CONFIG_LIBPMEM2_INSTALLED
-    librpma_apm_LIBS = -lrpma -lpmem2
-  else
-    librpma_apm_LIBS = -lrpma -lpmem
-  endif
-  ENGINES += librpma_apm
-endif
-ifdef CONFIG_LIBRPMA_GPSPM
-  librpma_gpspm_SRCS = engines/librpma_gpspm.c engines/librpma_gpspm_flush.pb-c.c
-  librpma_fio_SRCS = engines/librpma_fio.c
-  ifdef CONFIG_LIBPMEM2_INSTALLED
-    librpma_gpspm_LIBS = -lrpma -lpmem2 -lprotobuf-c
-  else
-    librpma_gpspm_LIBS = -lrpma -lpmem -lprotobuf-c
-  endif
-  ENGINES += librpma_gpspm
-endif
-ifdef librpma_fio_SRCS
-  SOURCE += $(librpma_fio_SRCS)
 endif
 ifdef CONFIG_POSIXAIO
   SOURCE += engines/posixaio.c
@@ -388,7 +365,7 @@ T_DEDUPE_PROGS = t/fio-dedupe
 T_VS_OBJS = t/verify-state.o t/log.o crc/crc32c.o crc/crc32c-intel.o crc/crc32c-arm64.o t/debug.o
 T_VS_PROGS = t/fio-verify-state
 
-T_PIPE_ASYNC_OBJS = t/read-to-pipe-async.o
+T_PIPE_ASYNC_OBJS = t/read-to-pipe-async.o t/log.o
 T_PIPE_ASYNC_PROGS = t/read-to-pipe-async
 
 T_IOU_RING_OBJS = t/io_uring.o lib/rand.o lib/pattern.o lib/strntol.o

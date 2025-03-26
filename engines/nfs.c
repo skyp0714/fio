@@ -157,16 +157,28 @@ static int queue_write(struct fio_libnfs_options *o, struct io_u *io_u)
 {
 	struct nfs_data *nfs_data = io_u->engine_data;
 
+#ifdef LIBNFS_API_V2
+	return nfs_pwrite_async(o->context, nfs_data->nfsfh,
+				io_u->buf, io_u->buflen, io_u->offset,
+				nfs_callback, io_u);
+#else
 	return nfs_pwrite_async(o->context, nfs_data->nfsfh, io_u->offset,
 				io_u->buflen, io_u->buf, nfs_callback, io_u);
+#endif
 }
 
 static int queue_read(struct fio_libnfs_options *o, struct io_u *io_u)
 {
 	struct nfs_data *nfs_data = io_u->engine_data;
 
+#ifdef LIBNFS_API_V2
+	return nfs_pread_async(o->context, nfs_data->nfsfh,
+				io_u->buf, io_u->buflen, io_u->offset,
+				nfs_callback, io_u);
+#else
 	return nfs_pread_async(o->context, nfs_data->nfsfh, io_u->offset,
 				io_u->buflen, nfs_callback, io_u);
+#endif
 }
 
 static enum fio_q_status fio_libnfs_queue(struct thread_data *td,
@@ -280,7 +292,7 @@ static int fio_libnfs_open(struct thread_data *td, struct fio_file *f)
 	nfs_data = calloc(1, sizeof(struct nfs_data));
 	nfs_data->options = options;
 
-	if (td->o.td_ddir == TD_DDIR_WRITE)
+	if (td_write(td))
 		flags |= O_CREAT | O_RDWR;
 	else
 		flags |= O_RDWR;
@@ -308,7 +320,7 @@ static int fio_libnfs_close(struct thread_data *td, struct fio_file *f)
 	return ret;
 }
 
-struct ioengine_ops ioengine = {
+static struct ioengine_ops ioengine = {
 	.name		= "nfs",
 	.version	= FIO_IOOPS_VERSION,
 	.setup		= fio_libnfs_setup,

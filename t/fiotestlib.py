@@ -139,7 +139,7 @@ class FioExeTest(FioTest):
         if 'stderr_empty' in self.success:
             if self.success['stderr_empty']:
                 if stderr_size != 0:
-                    self.failure_reason = f"{self.failure_reason} stderr not empty,"
+                    self.failure_reason = f"{self.failure_reason} stderr not empty size {stderr_size},"
                     self.passed = False
             else:
                 if stderr_size == 0:
@@ -175,7 +175,7 @@ class FioJobFileTest(FioExeTest):
 
         super().__init__(fio_path, success, testnum, artifact_root)
 
-    def setup(self, parameters=None):
+    def setup(self, parameters):
         """Setup instance variables for fio job test."""
 
         self.filenames['fio_output'] = f"{os.path.basename(self.fio_job)}.output"
@@ -185,6 +185,8 @@ class FioJobFileTest(FioExeTest):
             f"--output={self.filenames['fio_output']}",
             self.fio_job,
             ]
+        if parameters:
+            fio_args += parameters
 
         super().setup(fio_args)
 
@@ -206,7 +208,7 @@ class FioJobFileTest(FioExeTest):
                             self.testnum,
                             self.paths['artifacts'],
                             output_format=self.output_format)
-        precon.setup()
+        precon.setup(None)
         precon.run()
         precon.check_result()
         self.precon_failed = not precon.passed
@@ -258,12 +260,13 @@ class FioJobFileTest(FioExeTest):
             return
 
         #
-        # Sometimes fio informational messages are included at the top of the
-        # JSON output, especially under Windows. Try to decode output as JSON
-        # data, skipping everything until the first {
+        # Sometimes fio informational messages are included outside the JSON
+        # output, especially under Windows. Try to decode output as JSON data,
+        # skipping outside the first { and last }
         #
         lines = file_data.splitlines()
-        file_data = '\n'.join(lines[lines.index("{"):])
+        last = len(lines) - lines[::-1].index("}")
+        file_data = '\n'.join(lines[lines.index("{"):last])
         try:
             self.json_data = json.loads(file_data)
         except json.JSONDecodeError:
@@ -318,21 +321,19 @@ class FioJobCmdTest(FioExeTest):
             file_data = file.read()
 
         #
-        # Sometimes fio informational messages are included at the top of the
-        # JSON output, especially under Windows. Try to decode output as JSON
-        # data, lopping off up to the first four lines
+        # Sometimes fio informational messages are included outside the JSON
+        # output, especially under Windows. Try to decode output as JSON data,
+        # skipping outside the first { and last }
         #
         lines = file_data.splitlines()
-        for i in range(5):
-            file_data = '\n'.join(lines[i:])
-            try:
-                self.json_data = json.loads(file_data)
-            except json.JSONDecodeError:
-                continue
-            else:
-                return True
+        last = len(lines) - lines[::-1].index("}")
+        file_data = '\n'.join(lines[lines.index("{"):last])
+        try:
+            self.json_data = json.loads(file_data)
+        except json.JSONDecodeError:
+            return False
 
-        return False
+        return True
 
     @staticmethod
     def check_empty(job):
@@ -412,7 +413,7 @@ def run_fio_tests(test_list, test_env, args):
                 fio_pre_success=fio_pre_success,
                 output_format=output_format)
             desc = config['job']
-            parameters = []
+            parameters = config['parameters'] if 'parameters' in config else None
         elif issubclass(config['test_class'], FioJobCmdTest):
             if not 'success' in config:
                 config['success'] = SUCCESS_DEFAULT

@@ -749,6 +749,11 @@ open_again:
 		if (!read_only)
 			flags |= O_RDWR;
 
+		if (td->o.verify_only) {
+			flags &= ~O_RDWR;
+			flags |= O_RDONLY;
+		}
+
 		if (f->filetype == FIO_TYPE_FILE && td->o.allow_create)
 			flags |= O_CREAT;
 
@@ -1383,16 +1388,10 @@ int setup_files(struct thread_data *td)
 	if (err)
 		goto err_out;
 
-	/*
-	 * iolog already set the total io size, if we read back
-	 * stored entries.
-	 */
-	if (!o->read_iolog_file) {
-		if (o->io_size)
-			td->total_io_size = o->io_size * o->loops;
-		else
-			td->total_io_size = o->size * o->loops;
-	}
+	if (o->io_size)
+		td->total_io_size = o->io_size * o->loops;
+	else
+		td->total_io_size = o->size * o->loops;
 
 done:
 	if (td->o.zone_mode == ZONE_MODE_ZBD) {
@@ -1406,8 +1405,8 @@ done:
 
 	td_restore_runstate(td, old_state);
 
-	if (td->o.fdp) {
-		err = fdp_init(td);
+	if (td->o.dp_type != FIO_DP_NONE) {
+		err = dp_init(td);
 		if (err)
 			goto err_out;
 	}

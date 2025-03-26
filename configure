@@ -155,11 +155,11 @@ output_sym() {
 check_min_lib_version() {
   _feature=$3
 
-  if "${cross_prefix}"pkg-config --atleast-version="$2" "$1" > /dev/null 2>&1; then
+  if pkg-config --atleast-version="$2" "$1" > /dev/null 2>&1; then
     return 0
   fi
   : "${_feature:=${1}}"
-  if "${cross_prefix}"pkg-config --version > /dev/null 2>&1; then
+  if pkg-config --version > /dev/null 2>&1; then
     if test "$(eval echo \"\$$_feature\")" = "yes" ; then
       feature_not_found "$_feature" "$1 >= $2"
     fi
@@ -189,6 +189,7 @@ libiscsi="no"
 libnbd="no"
 libnfs=""
 xnvme=""
+isal=""
 libblkio=""
 libzbc=""
 dfs=""
@@ -262,6 +263,8 @@ for opt do
   ;;
   --disable-xnvme) xnvme="no"
   ;;
+  --disable-isal) isal="no"
+  ;;
   --disable-libblkio) libblkio="no"
   ;;
   --disable-tcmalloc) disable_tcmalloc="yes"
@@ -322,6 +325,7 @@ if test "$show_help" = "yes" ; then
   echo "--enable-libiscsi       Enable iscsi support"
   echo "--enable-libnbd         Enable libnbd (NBD engine) support"
   echo "--disable-xnvme         Disable xnvme support even if found"
+  echo "--disable-isal          Disable isal support even if found"
   echo "--disable-libblkio      Disable libblkio support even if found"
   echo "--disable-libzbc        Disable libzbc even if found"
   echo "--disable-tcmalloc      Disable tcmalloc support"
@@ -334,7 +338,7 @@ if test "$show_help" = "yes" ; then
 fi
 
 cross_prefix=${cross_prefix-${CROSS_COMPILE}}
-# Preferred compiler (can be overriden later after we know the platform):
+# Preferred compiler (can be overridden later after we know the platform):
 #  ${CC} (if set)
 #  ${cross_prefix}gcc (if cross-prefix specified)
 #  gcc if available
@@ -362,6 +366,8 @@ elif check_define __sun__ ; then
   CFLAGS="$CFLAGS -D_REENTRANT"
 elif check_define _WIN32 ; then
   targetos='CYGWIN'
+elif check_define __QNX__ ; then
+  targetos='QNX'
 else
   targetos=`uname -s`
 fi
@@ -461,6 +467,9 @@ CYGWIN*)
   sched_idle="yes"
   pthread_condattr_setclock="no"
   pthread_affinity="no"
+  ;;
+QNX)
+  LIBS="-lsocket"
   ;;
 esac
 
@@ -864,7 +873,8 @@ cat > $TMPC <<EOF
 #include <signal.h> /* pthread_sigmask() */
 int main(void)
 {
-  return pthread_sigmask(0, NULL, NULL);
+  sigset_t sigmask;
+  return pthread_sigmask(0, NULL, &sigmask);
 }
 EOF
 if compile_prog "" "$LIBS" "pthread_sigmask" ; then
@@ -995,8 +1005,9 @@ int main(int argc, char **argv)
   return pd != NULL;
 }
 EOF
-if test "$disable_rdma" != "yes" && compile_prog "" "-libverbs" "libverbs" ; then
+if test "$disable_rdma" != "yes" && compile_prog "" "-libverbs -lnl-3 -lnl-route-3" "libverbs" ; then
     libverbs="yes"
+    LIBS="-libverbs -lnl-3 -lnl-route-3 $LIBS"
 fi
 print_config "libverbs" "$libverbs"
 
@@ -1014,52 +1025,11 @@ int main(int argc, char **argv)
   return 0;
 }
 EOF
-if test "$disable_rdma" != "yes" && compile_prog "" "-lrdmacm" "rdma"; then
+if test "$disable_rdma" != "yes" && compile_prog "" "-lrdmacm -lnl-3 -lnl-route-3" "rdma"; then
     rdmacm="yes"
+    LIBS="-libverbs -lnl-3 -lnl-route-3 $LIBS"
 fi
 print_config "rdmacm" "$rdmacm"
-
-##########################################
-# librpma probe
-# The librpma engines require librpma>=v0.11.0 with rpma_cq_get_wc().
-if test "$librpma" != "yes" ; then
-  librpma="no"
-fi
-cat > $TMPC << EOF
-#include <librpma.h>
-int main(void)
-{
-  void *ptr = rpma_cq_get_wc;
-  (void) ptr; /* unused */
-  return 0;
-}
-EOF
-if test "$disable_rdma" != "yes" && compile_prog "" "-lrpma" "rpma"; then
-    librpma="yes"
-fi
-print_config "librpma" "$librpma"
-
-##########################################
-# libprotobuf-c probe
-if test "$libprotobuf_c" != "yes" ; then
-  libprotobuf_c="no"
-fi
-cat > $TMPC << EOF
-#include <stdio.h>
-#include <protobuf-c/protobuf-c.h>
-#if !defined(PROTOBUF_C_VERSION_NUMBER)
-# error PROTOBUF_C_VERSION_NUMBER is not defined!
-#endif
-int main(int argc, char **argv)
-{
-  (void)protobuf_c_message_check(NULL);
-  return 0;
-}
-EOF
-if compile_prog "" "-lprotobuf-c" "protobuf_c"; then
-    libprotobuf_c="yes"
-fi
-print_config "libprotobuf_c" "$libprotobuf_c"
 
 ##########################################
 # asprintf() and vasprintf() probes
@@ -1085,6 +1055,7 @@ if test "$have_vasprintf" != "yes" ; then
 fi
 cat > $TMPC << EOF
 #include <stdio.h>
+#include <stdarg.h>
 
 int main(int argc, char **argv)
 {
@@ -1626,14 +1597,14 @@ int main(void)
   return GTK_CHECK_VERSION(2, 18, 0) ? 0 : 1; /* 0 on success */
 }
 EOF
-GTK_CFLAGS=$(${cross_prefix}pkg-config --cflags gtk+-2.0 gthread-2.0)
+GTK_CFLAGS=$(pkg-config --cflags gtk+-2.0 gthread-2.0)
 ORG_LDFLAGS=$LDFLAGS
 LDFLAGS=$(echo $LDFLAGS | sed s/"-static"//g)
 if test "$?" != "0" ; then
   echo "configure: gtk and gthread not found"
   exit 1
 fi
-GTK_LIBS=$(${cross_prefix}pkg-config --libs gtk+-2.0 gthread-2.0)
+GTK_LIBS=$(pkg-config --libs gtk+-2.0 gthread-2.0)
 if test "$?" != "0" ; then
   echo "configure: gtk and gthread not found"
   exit 1
@@ -1722,6 +1693,25 @@ elif compile_prog "" "-lws2_32" "TCP_NODELAY"; then
   LIBS="$LIBS -lws2_32"
 fi
 print_config "TCP_NODELAY" "$tcp_nodelay"
+
+##########################################
+# Check whether we have vsock
+if test "$vsock" != "yes" ; then
+  vsock="no"
+fi
+cat > $TMPC << EOF
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <linux/vm_sockets.h>
+int main(int argc, char **argv)
+{
+  return socket(AF_VSOCK, SOCK_STREAM, 0);
+}
+EOF
+if compile_prog "" "" "vsock"; then
+  vsock="yes"
+fi
+print_config "vsock" "$vsock"
 
 ##########################################
 # Check whether we have SO_SNDBUF
@@ -2651,7 +2641,7 @@ if test "$libzbc" != "no" ; then
 fi
 print_config "libzbc engine" "$libzbc"
 
-if test "$targetos" = "Linux" ; then
+if test "$targetos" = "Linux" || test "$targetos" = "Android"; then
 ##########################################
 # Check NVME_URING_CMD support
 cat > $TMPC << EOF
@@ -2673,7 +2663,7 @@ fi
 ##########################################
 # Check if we have xnvme
 if test "$xnvme" != "no" ; then
-  if check_min_lib_version xnvme 0.7.0; then
+  if check_min_lib_version xnvme 0.7.4; then
     xnvme="yes"
     xnvme_cflags=$(pkg-config --cflags xnvme)
     xnvme_libs=$(pkg-config --libs xnvme)
@@ -2682,6 +2672,28 @@ if test "$xnvme" != "no" ; then
   fi
 fi
 print_config "xnvme engine" "$xnvme"
+
+if test "$targetos" = "Linux" ; then
+##########################################
+# Check ISA-L support
+cat > $TMPC << EOF
+#include <isa-l/crc.h>
+#include <stddef.h>
+int main(void)
+{
+  return crc16_t10dif(0, NULL, 4096);
+}
+EOF
+if test "$isal" != "no" ; then
+  if compile_prog "" "-lisal" "ISAL"; then
+    isal="yes"
+    LIBS="-lisal $LIBS"
+  else
+    isal="no"
+  fi
+fi
+print_config "isal" "$isal"
+fi
 
 ##########################################
 # Check if we have libblkio
@@ -3067,17 +3079,6 @@ fi
 if test "$libverbs" = "yes" -a "$rdmacm" = "yes" ; then
   output_sym "CONFIG_RDMA"
 fi
-# librpma is supported on the 'x86_64' architecture for now
-if test "$cpu" = "x86_64" -a "$libverbs" = "yes" -a "$rdmacm" = "yes" \
-    -a "$librpma" = "yes" \
-    && test "$libpmem" = "yes" -o "$libpmem2" = "yes" ; then
-  output_sym "CONFIG_LIBRPMA_APM"
-fi
-if test "$cpu" = "x86_64" -a "$libverbs" = "yes" -a "$rdmacm" = "yes" \
-    -a "$librpma" = "yes" -a "$libprotobuf_c" = "yes" \
-    && test "$libpmem" = "yes" -o "$libpmem2" = "yes" ; then
-  output_sym "CONFIG_LIBRPMA_GPSPM"
-fi
 if test "$clock_gettime" = "yes" ; then
   output_sym "CONFIG_CLOCK_GETTIME"
 fi
@@ -3164,6 +3165,9 @@ if test "$pwritev2" = "yes" ; then
 fi
 if test "$ipv6" = "yes" ; then
   output_sym "CONFIG_IPV6"
+fi
+if test "$vsock" = "yes"; then
+  output_sym "CONFIG_VSOCK"
 fi
 if test "$http" = "yes" ; then
   output_sym "CONFIG_HTTP"
@@ -3332,6 +3336,9 @@ if test "$xnvme" = "yes" ; then
   output_sym "CONFIG_LIBXNVME"
   echo "LIBXNVME_CFLAGS=$xnvme_cflags" >> $config_host_mak
   echo "LIBXNVME_LIBS=$xnvme_libs" >> $config_host_mak
+fi
+if test "$isal" = "yes" ; then
+  output_sym "CONFIG_LIBISAL"
 fi
 if test "$libblkio" = "yes" ; then
   output_sym "CONFIG_LIBBLKIO"

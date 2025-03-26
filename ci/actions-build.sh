@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # This script expects to be invoked from the base fio directory.
 set -eu
 
@@ -29,7 +29,16 @@ main() {
                 return 1
             fi
             ;;
-        */linux)
+        */linux | */ubuntu)
+            case "${CI_TARGET_ARCH}" in
+                "x86_64")
+                    configure_flags+=(
+                        "--enable-cuda"
+                    )
+                    ;;
+	    esac
+	    ;;&
+        */linux | */ubuntu | */debian | */fedora | */alma | */oracle | */rocky)
             case "${CI_TARGET_ARCH}" in
                 "i686")
                     extra_cflags="${extra_cflags} -m32"
@@ -37,7 +46,6 @@ main() {
                     ;;
                 "x86_64")
                     configure_flags+=(
-                        "--enable-cuda"
                         "--enable-libiscsi"
                         "--enable-libnbd"
                     )
@@ -61,7 +69,9 @@ main() {
     configure_flags+=(--extra-cflags="${extra_cflags}")
 
     ./configure "${configure_flags[@]}"
-    make -j 2
+    make -j "$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
+# macOS does not have nproc, so we have to use sysctl to obtain the number of
+# logical CPUs.
 }
 
 main

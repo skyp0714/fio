@@ -51,6 +51,7 @@
 #include "helper_thread.h"
 #include "pshared.h"
 #include "zone-dist.h"
+#include "fio_time.h"
 
 static struct fio_sem *startup_sem;
 static struct flist_head *cgroup_list;
@@ -980,6 +981,14 @@ static void do_io(struct thread_data *td, uint64_t *bytes_done)
 	*/
 	if (td_write(td) && td_random(td) && td->o.norandommap)
 		total_bytes = max(total_bytes, (uint64_t) td->o.io_size);
+
+	/*
+	 * Don't break too early if io_size > size. The exception is when
+	 * verify is enabled.
+	 */
+	if (td_rw(td) && !td_random(td) && td->o.verify == VERIFY_NONE)
+		total_bytes = max(total_bytes, (uint64_t)td->o.io_size);
+
 	/*
 	 * If verify_backlog is enabled, we'll run the verify in this
 	 * handler as well. For that case, we may need up to twice the
@@ -1067,6 +1076,17 @@ static void do_io(struct thread_data *td, uint64_t *bytes_done)
 		if (td->o.verify != VERIFY_NONE && io_u->ddir == DDIR_READ &&
 		    ((io_u->flags & IO_U_F_VER_LIST) || !td_rw(td))) {
 
+			/*
+			 * For read only workloads generate the seed. This way
+			 * we can still verify header seed at any later
+			 * invocation.
+			 */
+			if (!td_write(td) && !td->o.verify_pattern_bytes) {
+				io_u->rand_seed = __rand(&td->verify_state);
+				if (sizeof(int) != sizeof(long *))
+					io_u->rand_seed *= __rand(&td->verify_state);
+			}
+
 			if (verify_state_should_stop(td, io_u)) {
 				put_io_u(td, io_u);
 				break;
@@ -1136,6 +1156,9 @@ reap:
 		}
 		if (ret < 0)
 			break;
+
+		if (ddir_rw(ddir) && td->o.thinkcycles)
+			cycles_spin(td->o.thinkcycles);
 
 		if (ddir_rw(ddir) && td->o.thinktime)
 			handle_thinktime(td, ddir, &comp_time);
@@ -1230,8 +1253,18 @@ static int init_file_completion_logging(struct thread_data *td,
 	if (td->o.verify == VERIFY_NONE || !td->o.verify_state_save)
 		return 0;
 
+	/*
+	 * Async IO completion order may be different from issue order. Double
+	 * the number of write completions to cover the case the writes issued
+	 * earlier complete slowly and fall in the last write log entries.
+	 */
+	td->last_write_comp_depth = depth;
+	if (!td_ioengine_flagged(td, FIO_SYNCIO))
+		td->last_write_comp_depth += depth;
+
 	for_each_file(td, f, i) {
-		f->last_write_comp = scalloc(depth, sizeof(uint64_t));
+		f->last_write_comp = scalloc(td->last_write_comp_depth,
+					     sizeof(uint64_t));
 		if (!f->last_write_comp)
 			goto cleanup;
 	}
@@ -1334,7 +1367,7 @@ static int init_io_u(struct thread_data *td)
 int init_io_u_buffers(struct thread_data *td)
 {
 	struct io_u *io_u;
-	unsigned long long max_bs, min_write;
+	unsigned long long max_bs, min_write, trim_bs = 0;
 	int i, max_units;
 	int data_xfer = 1;
 	char *p;
@@ -1345,7 +1378,18 @@ int init_io_u_buffers(struct thread_data *td)
 	td->orig_buffer_size = (unsigned long long) max_bs
 					* (unsigned long long) max_units;
 
-	if (td_ioengine_flagged(td, FIO_NOIO) || !(td_read(td) || td_write(td)))
+	if (td_trim(td) && td->o.num_range > 1) {
+		trim_bs = td->o.num_range * sizeof(struct trim_range);
+		td->orig_buffer_size = trim_bs
+					* (unsigned long long) max_units;
+	}
+
+	/*
+	 * For reads, writes, and multi-range trim operations we need a
+	 * data buffer
+	 */
+	if (td_ioengine_flagged(td, FIO_NOIO) ||
+	    !(td_read(td) || td_write(td) || (td_trim(td) && td->o.num_range > 1)))
 		data_xfer = 0;
 
 	/*
@@ -1397,7 +1441,10 @@ int init_io_u_buffers(struct thread_data *td)
 				fill_verify_pattern(td, io_u->buf, max_bs, io_u, 0, 0);
 			}
 		}
-		p += max_bs;
+		if (td_trim(td) && td->o.num_range > 1)
+			p += trim_bs;
+		else
+			p += max_bs;
 	}
 
 	return 0;
@@ -2081,14 +2128,14 @@ static void reap_threads(unsigned int *nr_running, uint64_t *t_rate,
 			 uint64_t *m_rate)
 {
 	unsigned int cputhreads, realthreads, pending;
-	int status, ret;
+	int ret;
 
 	/*
 	 * reap exited threads (TD_EXITED -> TD_REAPED)
 	 */
 	realthreads = pending = cputhreads = 0;
 	for_each_td(td) {
-		int flags = 0;
+		int flags = 0, status;
 
 		if (!strcmp(td->o.ioengine, "cpuio"))
 			cputhreads++;

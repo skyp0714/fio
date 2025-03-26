@@ -104,8 +104,7 @@ static void zone_lock(struct thread_data *td, const struct fio_file *f,
 		      struct fio_zone_info *z)
 {
 #ifndef NDEBUG
-	struct zoned_block_device_info *zbd = f->zbd_info;
-	uint32_t const nz = z - zbd->zone_info;
+	unsigned int const nz = zbd_zone_idx(f, z);
 	/* A thread should never lock zones outside its working area. */
 	assert(f->min_zone <= nz && nz < f->max_zone);
 	assert(z->has_wp);
@@ -674,9 +673,20 @@ static bool zbd_zone_align_file_sizes(struct thread_data *td,
 		return false;
 	}
 
+	if (td->o.td_ddir == TD_DDIR_READ) {
+		z = zbd_offset_to_zone(f, f->file_offset + f->io_size);
+		new_end = z->start;
+		if (f->file_offset + f->io_size > new_end) {
+			log_info("%s: rounded io_size from %"PRIu64" to %"PRIu64"\n",
+				 f->file_name, f->io_size,
+				 new_end - f->file_offset);
+			f->io_size = new_end - f->file_offset;
+		}
+		return true;
+	}
+
 	z = zbd_offset_to_zone(f, f->file_offset);
-	if ((f->file_offset != z->start) &&
-	    (td->o.td_ddir != TD_DDIR_READ)) {
+	if (f->file_offset != z->start) {
 		new_offset = zbd_zone_end(z);
 		if (new_offset >= f->file_offset + f->io_size) {
 			log_info("%s: io_size must be at least one zone\n",
@@ -692,8 +702,7 @@ static bool zbd_zone_align_file_sizes(struct thread_data *td,
 
 	z = zbd_offset_to_zone(f, f->file_offset + f->io_size);
 	new_end = z->start;
-	if ((td->o.td_ddir != TD_DDIR_READ) &&
-	    (f->file_offset + f->io_size != new_end)) {
+	if (f->file_offset + f->io_size != new_end) {
 		if (new_end <= f->file_offset) {
 			log_info("%s: io_size must be at least one zone\n",
 				 f->file_name);
@@ -1256,6 +1265,16 @@ int zbd_setup_files(struct thread_data *td)
 		}
 
 		/*
+		 * If this job does not do write operations, skip open zone
+		 * condition check.
+		 */
+		if (!td_write(td)) {
+			if (td->o.job_max_open_zones)
+				log_info("'job_max_open_zones' is valid only for write jobs\n");
+			continue;
+		}
+
+		/*
 		 * The per job max open zones limit cannot be used without a
 		 * global max open zones limit. (As the tracking of open zones
 		 * is disabled when there is no global max open zones limit.)
@@ -1352,9 +1371,6 @@ void zbd_file_reset(struct thread_data *td, struct fio_file *f)
 	if (td->o.verify != VERIFY_NONE) {
 		verify_data_left = td->runstate == TD_VERIFYING ||
 			td->io_hist_len || td->verify_batch;
-		if (td->io_hist_len && td->o.verify_backlog)
-			verify_data_left =
-				td->io_hist_len % td->o.verify_backlog;
 		if (!verify_data_left)
 			zbd_reset_zones(td, f, zb, ze);
 	}
@@ -1876,7 +1892,8 @@ enum fio_ddir zbd_adjust_ddir(struct thread_data *td, struct io_u *io_u,
 	if (ddir != DDIR_READ || !td_rw(td))
 		return ddir;
 
-	if (io_u->file->last_start[DDIR_WRITE] != -1ULL || td->o.read_beyond_wp)
+	if (io_u->file->last_start[DDIR_WRITE] != -1ULL ||
+	    td->o.read_beyond_wp || td->o.rwmix[DDIR_WRITE] == 0)
 		return DDIR_READ;
 
 	return DDIR_WRITE;
@@ -2171,6 +2188,7 @@ retry:
 	case DDIR_WAIT:
 	case DDIR_LAST:
 	case DDIR_INVAL:
+	case DDIR_TIMEOUT:
 		goto accept;
 	}
 
