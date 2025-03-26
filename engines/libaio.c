@@ -10,6 +10,8 @@
 #include <libaio.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+#include <math.h>
+#include <regex.h>
 
 #include "../fio.h"
 #include "../lib/pow2.h"
@@ -22,10 +24,24 @@
 #define IOCB_FLAG_IOPRIO    (1 << 1)
 #endif
 
+#define BUFFER_SIZE 16384
+
 /* Hack for libaio < 0.3.111 */
 #ifndef CONFIG_LIBAIO_RW_FLAGS
 #define aio_rw_flags __pad2
 #endif
+
+// dummy timer
+void delay_nanoseconds(unsigned long nanoseconds) {
+    struct timespec start, end;
+    long elapsed_nanoseconds;
+
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    do {
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        elapsed_nanoseconds = (end.tv_sec - start.tv_sec) * 1000000000L + (end.tv_nsec - start.tv_nsec);
+    } while (elapsed_nanoseconds < nanoseconds);
+}
 
 static int fio_libaio_commit(struct thread_data *td);
 static int fio_libaio_init(struct thread_data *td);
@@ -51,6 +67,8 @@ struct libaio_data {
 	unsigned int queued;
 	unsigned int head;
 	unsigned int tail;
+
+	char local_buffer[BUFFER_SIZE];
 
 	struct cmdprio cmdprio;
 };
@@ -197,6 +215,14 @@ static int fio_libaio_getevents(struct thread_data *td, unsigned int min,
 	unsigned actual_min = td->o.iodepth_batch_complete_min == 0 ? 0 : min;
 	struct timespec __lt, *lt = NULL;
 	int r, events = 0;
+	struct io_u *io_u;
+	int buf_size;
+
+	regex_t regex;
+	int regcomp_res, regexec_res; 
+	struct io_event *event_array;
+	struct iocb *cur_iocb;
+	int i, j;
 
 	if (t) {
 		__lt = *t;
@@ -213,7 +239,76 @@ static int fio_libaio_getevents(struct thread_data *td, unsigned int min,
 		} else {
 			r = io_getevents(ld->aio_ctx, actual_min,
 				max - events, ld->aio_events + events, lt);
-		}
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		// 	/* jip: Doing memcpy() to touch the data */
+            for (i=0; i<r; i++)
+            {
+                if (i == 0)
+                {
+                    regcomp_res = regcomp(&regex, "qoweihljdhvalwekujhfa;owiehflzk|sjncdvlaksjdhcp|;oqwieuh|nflkajsdbnv|laksjdb", REG_EXTENDED);
+                    if (regcomp_res)
+                    {
+                        fprintf(stderr, "Could not compile regex\n");
+                        exit(1);
+                    }
+                }
+
+                //printf("Completed event %d\n", i);
+                event_array = ld->aio_events + events;
+                cur_iocb = event_array[i].obj;
+
+                /* Copy the data into local buffer */
+                //if (ld->local_buffer == NULL)
+                //  ld->local_buffer = (void *) malloc(cur_iocb->u.c.nbytes);
+
+                //printf("Before copy (src): %s\n", (char *)cur_iocb->u.c.buf);
+                //printf("Before copy (dest): %s\n", (char *)local_buffer);
+
+                //for (j=0; j<1; j++)
+                //{
+                //  memcpy((void *) ld->local_buffer, cur_iocb->u.c.buf, cur_iocb->u.c.nbytes);
+                //  regcomp_res = regcomp( &regex, "Hello World", REG_EXTENDED);
+                //  regexec_res = regexec( &regex, cur_iocb->u.c.buf, 0, NULL, 0);
+                //  regfree(&regex);
+                //}
+
+                buf_size = BUFFER_SIZE > cur_iocb->u.c.nbytes ? cur_iocb->u.c.nbytes : BUFFER_SIZE;
+				// delay_nanoseconds( sqrt(cur_iocb->u.c.nbytes)* 40);
+                for (j=0; j<cur_iocb->u.c.nbytes; j=j+buf_size)
+                {
+                    memcpy((void *) ld->local_buffer, (void *)((char*)cur_iocb->u.c.buf+j), buf_size);
+					regexec_res = regexec(&regex, ld->local_buffer, 0, NULL, 0);
+                    if (regexec_res && regexec_res != REG_NOMATCH)
+                    {
+                        fprintf(stderr, "Regex match failed\n");
+                        exit(1);
+                    }
+                }
+
+                if (i == r-1)
+                    regfree(&regex);
+            }
+        }
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+			/*
+			Read the buffer to bring it up to the core cache hierarchy
+			*/
+			// if (r > 0) {
+			// 	// Process the completed event(s)
+			// 	for (int i = 0; i < r; i++) {
+			// 		io_u = container_of((ld->aio_events + events + i)->obj, struct io_u, iocb);
+
+			// 		buf_size = BUFFER_SIZE > io_u->xfer_buflen ? io_u->xfer_buflen : BUFFER_SIZE;
+			// 		delay_nanoseconds( sqrt(io_u->xfer_buflen)* 40);
+
+			// 		for(long long j = 0; j< io_u->xfer_buflen; j=j+buf_size){
+			// 			memcpy((void *) ld->local_buffer, (void *)((char*)io_u->xfer_buf+j), buf_size);
+			// 		}
+					
+			// 	}
+			// }
+		// }
+
 		if (r > 0) {
 			events += r;
 			actual_min -= min((unsigned int)events, actual_min);

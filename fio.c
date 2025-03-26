@@ -36,6 +36,7 @@ int main(int argc, char *argv[], char *envp[])
 #error "No available clock source!"
 #endif
 
+	printf("LADIO modification done\n");
 	if (fio_server_create_sk_key())
 		goto done;
 

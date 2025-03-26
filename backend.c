@@ -30,6 +30,8 @@
 #include <sys/wait.h>
 #include <math.h>
 #include <pthread.h>
+// #include <numaif.h>
+// #include <numa.h>
 
 #include "fio.h"
 #include "smalloc.h"
@@ -444,6 +446,7 @@ int io_queue_event(struct thread_data *td, struct io_u *io_u, int *ret,
 		   enum fio_ddir ddir, uint64_t *bytes_issued, int from_verify,
 		   struct timespec *comp_time)
 {
+	// char * p;
 	switch (*ret) {
 	case FIO_Q_COMPLETED:
 		if (io_u->error) {
@@ -483,6 +486,7 @@ int io_queue_event(struct thread_data *td, struct io_u *io_u, int *ret,
 			requeue_io_u(td, &io_u);
 		} else {
 sync_done:
+
 			if (comp_time && should_check_rate(td))
 				fio_gettime(comp_time, NULL);
 
@@ -731,7 +735,7 @@ static void do_verify(struct thread_data *td, uint64_t verify_bytes)
 
 		if (io_queue_event(td, io_u, &ret, ddir, NULL, 1, NULL))
 			break;
-
+		
 		/*
 		 * if we can queue more, do so. but check if there are
 		 * completed io_u's first. Note that we can get BUSY even
@@ -958,7 +962,7 @@ static void do_io(struct thread_data *td, uint64_t *bytes_done)
 	unsigned int i;
 	int ret = 0;
 	uint64_t total_bytes, bytes_issued = 0;
-
+	
 	for (i = 0; i < DDIR_RWDIR_CNT; i++)
 		bytes_done[i] = td->bytes_done[i];
 
@@ -1118,7 +1122,7 @@ static void do_io(struct thread_data *td, uint64_t *bytes_done)
 
 			if (io_queue_event(td, io_u, &ret, ddir, &bytes_issued, 0, &comp_time))
 				break;
-
+			
 			/*
 			 * See if we need to complete some commands. Note that
 			 * we can get BUSY even without IO queued, if the
@@ -1193,6 +1197,7 @@ reap:
 			workqueue_flush(&td->io_wq);
 		cleanup_pending_aio(td);
 	}
+
 
 	/*
 	 * stop job if we failed doing any IO
@@ -2476,6 +2481,13 @@ reap:
 
 			if (td->o.use_thread) {
 				int ret;
+
+				// struct bitmask* nodemask = numa_allocate_nodemask();
+				// numa_bitmask_setbit(nodemask, 1); // Set memory policy to node 1
+
+				// if (set_mempolicy(MPOL_BIND, nodemask->maskp, numa_num_possible_nodes()) == -1) {
+				// 	log_err("Failed set_mempolicy");
+				// }
 
 				dprint(FD_PROCESS, "will pthread_create\n");
 				ret = pthread_create(&td->thread, NULL,
